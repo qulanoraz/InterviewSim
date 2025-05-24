@@ -2,4 +2,6 @@ Flask
 python-dotenv
 openai
 deepgram-sdk
-Werkzeug 
+Werkzeug
+pypdf2
+python-docx 

@@ -86,4 +86,33 @@
     - OpenRouter-specific optional headers (`HTTP-Referer`, `X-Title`) re-added via `extra_headers`.
     - Model name set to OpenRouter's `deepseek/deepseek-chat-v3-0324:free`.
     - Log messages updated to reflect OpenRouter usage.
-- Reminded user to update `.env` with their OpenRouter key for `DEEPSEEK_API_KEY` and restart the Flask application. 
+- Reminded user to update `.env` with their OpenRouter key for `DEEPSEEK_API_KEY` and restart the Flask application.
+
+## Task: Enhance Agent Logic (CV Parsing, Follow-ups, Adaptive Difficulty) - Phase 1 & 2
+- Added `pypdf2` and `python-docx` to `requirements.txt`.
+- Created `app/services/cv_parser_service.py` with text extraction for PDF, DOCX, TXT.
+- Integrated logger into `cv_parser_service.py`.
+- Implemented LLM-based skill/experience extraction in `cv_parser_service.extract_skills_and_experience`.
+- Modified `app/api/routes.py` (`/interview` endpoint) to:
+    - Handle `multipart/form-data` for CV uploads (alongside existing JSON handling).
+    - Call `cv_parser_service` to process uploaded CVs.
+    - Introduce a basic in-memory `cv_data_store` for temporary conversation state (skills, summary, history - HACK for single user).
+    - Adjusted logic to pass CV data context (conceptually) to agent logic functions (actual parameter passing is next).
+
+## Task: Enhance Agent Logic (CV Parsing, Follow-ups, Adaptive Difficulty) - Phase 3: Agent Logic Implementation
+- Updated `app/services/agent_logic.py` (`generate_interview_question` and `evaluate_answer`):
+    - Functions now accept and utilize a `conversation_state` dictionary.
+    - Refactored `get_llm_client` to initialize client once (for OpenRouter).
+    - Model name for LLM calls (question generation, evaluation) explicitly set to OpenRouter's `deepseek/deepseek-chat-v3-0324:free` for consistency.
+    - **`generate_interview_question` enhancements:**
+        - Uses `current_difficulty_next` from `conversation_state` (set by `evaluate_answer`) to determine `current_difficulty` for the current question.
+        - Generates follow-up questions based on last question, answer, and score, adapting prompt based on `current_difficulty`.
+        - If no history but CV data exists, attempts to route between behavioral/technical questions (rudimentary routing based on role keywords and skill count) and tailors prompt to `current_difficulty`.
+        - Generates general questions if no history/CV, considering `current_difficulty`.
+        - Improved prompt engineering and added post-processing for LLM question output (stripping preamble, ensuring question mark, fallback for empty question).
+    - **`evaluate_answer` enhancements:**
+        - Evaluation prompt now considers the `current_difficulty` at which the question was asked.
+        - Score from LLM is parsed as float and clamped to the 1.0-5.0 range.
+        - Sets `conversation_state['current_difficulty_next']` based on the latest score to influence the *next* question's difficulty.
+- Updated `app/api/routes.py` to correctly pass `conversation_state` to the modified `agent_logic` functions.
+- Fixed several linter errors in `app/services/agent_logic.py` related to f-string formatting and syntax. 
