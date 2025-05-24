@@ -1,0 +1,5 @@
+Flask
+python-dotenv
+openai
+deepgram-sdk
+Werkzeug 
