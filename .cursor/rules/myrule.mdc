@@ -1,0 +1,134 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+## Core Rules
+You have two modes of operation:
+1. Plan mode - You will work with the user to define a plan, you will gather all the information you need to make the changes but will not make any changes
+2. Act mode - You will make changes to the codebase based on the plan
+- You start in plan mode and will not move to act mode until the plan is approved by the user.- You will print `# Mode: PLAN` when in plan mode and `# Mode: ACT` when in act mode at the beginning of each response.- Unless the user explicity asks you to move to act mode, by typing `ACT` you will stay in plan mode.- You will move back to plan mode after every response and when the user types `PLAN`.- If the user asks you to take an action while in plan mode you will remind them that you are in plan mode and that they need to approve the plan first.- When in plan mode always output the full updated plan in every response.
+## Cursor Logs
+"cursor-logs.md" file used as the context of all actions of agent through the development. It is used for context for other agent with new conversation, so it can fully understand all context behind the task. At each your action, add context to "cursor-logs.md", so it can easily used as a context.
+---
+
+---
+description: This rule provides comprehensive best practices for developing Flask applications, covering code structure, security, performance, and testing.
+globs: *.py
+---
+- ## Code Organization and Structure:
+  - **Directory Structure Best Practices:**
+    - Follow a modular and organized project structure. A common structure is:
+      
+      project_root/
+      ├── app/
+      │   ├── __init__.py
+      │   ├── models.py
+      │   ├── views.py  # Or controllers.py
+      │   ├── forms.py
+      │   ├── utils.py # Helper functions
+      │   ├── api/
+      │   │   ├── __init__.py
+      │   │   ├── routes.py
+      │   ├── templates/
+      │   │   └── ...
+      │   ├── static/
+      │   │   └── ...
+      ├── tests/
+      │   ├── __init__.py
+      │   ├── conftest.py # Fixtures for tests
+      │   ├── test_models.py
+      │   ├── test_views.py
+      ├── migrations/
+      │   └── ... # Alembic migrations
+      ├── venv/ # Virtual environment
+      ├── .env    # Environment variables (use with caution, not for sensitive data in production)
+      ├── config.py # Application configuration
+      ├── requirements.txt or pyproject.toml # Dependencies
+      ├── run.py      # Application entry point
+      
+    - Use Blueprints to organize routes and views into logical modules. Blueprints promote reusability and maintainability.
+  - **File Naming Conventions:**
+    - Use descriptive and consistent file names.
+    - Examples: models.py, views.py, forms.py, utils.py, routes.py, test_*.py.
+    - Maintain consistency throughout the project.
+  - **Module Organization:**
+    - Group related functionality into modules. For instance, database models in models.py, user authentication logic in auth.py, and utility functions in utils.py.
+    - Use __init__.py files to make directories packages, allowing you to import modules within the directory using relative paths.
+  - **Component Architecture:**
+    - Design components with clear responsibilities and interfaces.
+    - Consider using a layered architecture (e.g., presentation, business logic, data access) to separate concerns.
+    - Use dependency injection to decouple components.
+  - **Code Splitting Strategies:**
+    - Decompose large modules into smaller, more manageable files.
+    - Extract reusable code into separate modules or packages.
+    - Employ lazy loading for modules that are not immediately needed.
+
+- ## Common Patterns and Anti-patterns:
+  - **Design Patterns Specific to Flask:**
+    - **Application Factory:** Use the application factory pattern to create Flask application instances. This allows for different configurations for different environments (development, testing, production).
+      python
+      def create_app(config_name):
+          app = Flask(__name__)
+          app.config.from_object(config[config_name])
+          config[config_name].init_app(app)
+
+          # Initialize extensions (e.g., db, mail) here
+          db.init_app(app)
+          mail.init_app(app)
+
+          # Register blueprints
+          from .main import main as main_blueprint
+          app.register_blueprint(main_blueprint)
+
+          return app
+      
+    - **Blueprints:** Organize application functionality into reusable blueprints.
+      python
+      from flask import Blueprint
+
+      bp = Blueprint('my_blueprint', __name__, url_prefix='/my_blueprint')
+
+      @bp.route('/route')
+      def my_route():
+          return 'Hello from my_blueprint'
+      
+  - **Recommended Approaches for Common Tasks:**
+    - **Database Interactions:** Use Flask-SQLAlchemy or another ORM for database interactions. Define models to represent database tables.
+    - **Form Handling:** Use Flask-WTF for form handling. This provides CSRF protection and simplifies form validation.
+    - **Authentication:** Use Flask-Login for user authentication. It provides utilities for managing user sessions and protecting routes.
+    - **API Development:** Use Flask-RESTful or Flask-API for building RESTful APIs. Consider using Marshmallow for serializing and deserializing data.
+  - **Anti-patterns and Code Smells to Avoid:**
+    - **Global State:** Avoid using global variables to store application state. Use the g object or session variables instead.
+    - **Tight Coupling:** Design components with loose coupling to improve maintainability and testability.
+    - **Fat Models/Views:** Keep models and views focused on their primary responsibilities. Move complex business logic to separate modules.
+    - **Hardcoding Configuration:** Avoid hardcoding configuration values. Use environment variables or a configuration file.
+  - **State Management Best Practices:**
+    - Use the Flask session object to store user-specific data across requests.
+    - For application-wide state, consider using a database or a caching mechanism.
+    - Avoid storing sensitive data in the session without proper encryption.
+  - **Error Handling Patterns:**
+    - Use try...except blocks to handle exceptions gracefully.
+    - Implement custom error handlers for specific exceptions. Return appropriate HTTP status codes and error messages.
+    - Use logging to record errors and warnings.
+    - Use Flask's abort() function to raise HTTP exceptions.
+
+- ## Common Pitfalls and Gotchas:
+  - **Frequent Mistakes Developers Make:**
+    - **Not using a virtual environment:** Always use a virtual environment to isolate project dependencies.
+    - **Not handling exceptions properly:** Handle exceptions gracefully to prevent application crashes.
+    - **Exposing sensitive data:** Avoid exposing sensitive data in logs or error messages.
+  - **Edge Cases to Be Aware Of:**
+    - **Handling Unicode correctly:** Be aware of Unicode encoding issues when working with text data.
+    - **Dealing with time zones:** Use a consistent time zone throughout the application.
+  - **Version-Specific Issues:**
+    - Be aware of compatibility issues when upgrading Flask or its dependencies.
+    - Consult the Flask documentation for version-specific information.
+  - **Compatibility Concerns:**
+    - Ensure that your application is compatible with different browsers and operating systems.
+    - Test your application on different devices.
+  - **Debugging Strategies:**
+    - Use the Flask debugger to identify and fix errors.
+    - Use logging to record errors and warnings.
+
+    - Use a profiler to identify performance bottlenecks.
