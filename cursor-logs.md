@@ -115,4 +115,23 @@
         - Score from LLM is parsed as float and clamped to the 1.0-5.0 range.
         - Sets `conversation_state['current_difficulty_next']` based on the latest score to influence the *next* question's difficulty.
 - Updated `app/api/routes.py` to correctly pass `conversation_state` to the modified `agent_logic` functions.
-- Fixed several linter errors in `app/services/agent_logic.py` related to f-string formatting and syntax. 
+- Fixed several linter errors in `app/services/agent_logic.py` related to f-string formatting and syntax.
+
+## Agent Logic Enhancements & Frontend Interaction Debugging (User Query -> Assistant Plan -> User "ACT" -> Assistant Execution)
+
+*   User reports white screen on `localhost:5000`. Identified port conflict (Flask and Vite on 5000) and Vite proxy misconfiguration.
+    *   **Action:** Changed Flask in `run.py` to port `5001`.
+    *   **Action:** Instructed user to change Vite proxy target in `vite.config.ts` to `http://localhost:5001`.
+    *   User confirmed accessing frontend via `localhost:5000` (Vite) and backend via `localhost:5001` (Flask).
+*   User reports "Error: Failed to start interview" on frontend when submitting only "Job Role" without CV. Backend logs show 400 error: "Missing 'audio' in request...".
+    *   **Diagnosis:** The backend logic incorrectly required audio if a CV wasn't being actively processed in the current request for the first time. It didn't allow starting an interview with only a role to get the first question.
+    *   **Action:** Modified audio requirement logic in `app/api/routes.py`.
+        *   Audio is now considered optional if:
+            1.  A CV file is part of the current request, and it's for the first question (i.e., `conversation_state["previous_questions"]` is empty).
+            2.  No CV file is part of the current request, and it's the very first question (i.e., `conversation_state["previous_questions"]` is empty).
+        *   Audio is required if `audio_base64` is missing and neither of the above conditions for omitting audio is met (typically for subsequent interview answers).
+    *   This allows the frontend to initiate an interview by sending just the `role` (and optionally a CV) without needing to send audio for the first interaction. The backend will then generate and return the first interview question.
+*   User initiated interview with "Job Role" only (no CV, no audio). Backend logs showed the audio requirement was correctly bypassed, but a `500 Internal Server Error` occurred.
+    *   **Traceback:** `TypeError: 'NoneType' object is not subscriptable` in `app/services/agent_logic.py` at line `log_cv_experience_summary = conversation_state.get('cv_experience_summary', '')[:50]`.
+    *   **Diagnosis:** When no CV is provided, `cv_experience_summary` is `None`. The `get(key, default)` method returns `None` if the key exists with a value of `None`, rather than the default. Slicing `None` causes the `TypeError`.
+    *   **Action:** Modified the line in `app/services/agent_logic.py` to `cv_experience_summary_for_log = conversation_state.get('cv_experience_summary')` followed by `log_cv_experience_summary = (cv_experience_summary_for_log or '')[:50]`. This ensures an empty string is sliced if the summary is `None` or actually an empty string. 

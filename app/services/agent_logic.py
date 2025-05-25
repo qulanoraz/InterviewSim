@@ -4,6 +4,7 @@ import openai
 from flask import current_app
 from app.utils.logger import get_logger
 import os
+import re
 
 logger = get_logger(__name__)
 
@@ -50,8 +51,10 @@ def generate_interview_question(role: str, conversation_state: dict) -> str | No
     logger.info(f"Generating interview question. Role: {role}.")
     if conversation_state is None: conversation_state = {}
 
-    log_cv_skills = conversation_state.get('cv_skills', [])
-    log_cv_experience_summary = conversation_state.get('cv_experience_summary', '')[:50]
+    # Prepare context for logging (truncate long strings)
+    log_cv_skills = str(conversation_state.get('cv_skills', []))[:100]
+    cv_experience_summary_for_log = conversation_state.get('cv_experience_summary') # Get the value, might be None
+    log_cv_experience_summary = (cv_experience_summary_for_log or '')[:50]         # Use 'or' to default to empty string if None/empty
     log_previous_qs_count = len(conversation_state.get('previous_questions', []))
     log_previous_scores = conversation_state.get('previous_scores', [])
     log_current_difficulty = conversation_state.get('current_difficulty', 'normal')
@@ -63,7 +66,7 @@ def generate_interview_question(role: str, conversation_state: dict) -> str | No
         return None
 
     prompt_parts = ["You are an expert interviewer."]
-    system_message = "You are an expert interviewer. Provide only the question text, no preamble. Be concise."
+    system_message = "You are an expert interviewer. Provide only the question text, in English, no preamble. Be concise."
 
     cv_skills = conversation_state.get('cv_skills', [])
     cv_experience = conversation_state.get('cv_experience_summary', '')
@@ -142,10 +145,36 @@ def generate_interview_question(role: str, conversation_state: dict) -> str | No
             extra_headers=_get_openrouter_headers()
         )
         question = response.choices[0].message.content.strip()
-        phrases_to_remove = ["Here is a question:", "Question:", "Here's a question:", "Okay, here is your question:", "Okay, here's a question:"]
+        
+        # Check for common refusal phrases in question generation
+        refusal_phrases_question = [
+            "i cannot", "i'm unable to", "i am unable to", "i'm sorry, but i cannot", 
+            "as an ai assistant, i cannot", "policy violation", "controversial", 
+            "inappropriate", "i am not programmed to", "i'm not supposed to",
+            "generate a question on that topic"
+        ]
+        if any(phrase in question.lower() for phrase in refusal_phrases_question):
+            logger.warning(f"LLM refusal detected during question generation: {question}")
+            # Potentially return a specific fallback question or None to indicate failure
+            # For now, returning None will trigger the 500 error in routes.py, which is acceptable for a refusal to generate.
+            return None 
+
+        phrases_to_remove = ["Here is a question:", "Question:", "Here\'s a question:", "Okay, here is your question:", "Okay, here\'s a question:"]
         for phrase in phrases_to_remove:
             if question.lower().startswith(phrase.lower()):
                 question = question[len(phrase):].strip()
+        
+        # More robust cleaning: strip leading/trailing quotes and asterisks
+        question = question.strip('\"*') 
+
+        # Remove leading numbering (e.g., "1. ", "a) ")
+        # This regex matches patterns like "1. ", "1) ", "a. ", "A. ", "a) ", "A) " or markdown list markers "* ", "- " or "+ "
+        # It also handles optional leading whitespace before the number/letter.
+        question = re.sub(r"^\s*[\d\w][\.\)]\s+", "", question).strip()
+        # Additional check for markdown style list like "- Question text" or "* Question text"
+        if question.startswith("- ") or question.startswith("* ") or question.startswith("+ "):
+            question = question[2:].strip()
+
         if not question.endswith('?') and question: # Ensure it's a question and not empty
             question += '?'
         elif not question: # Handle empty question string from LLM
@@ -154,6 +183,9 @@ def generate_interview_question(role: str, conversation_state: dict) -> str | No
         
         logger.info(f"Generated question: {question}")
         return question
+    except openai.APIError as e:
+        logger.error(f"OpenAI APIError generating interview question: {e.status_code=}, {e.response=}, {e.body=}, {e.request=}")
+        return None # Fallback to None, API route will handle 500 error
     except Exception as e:
         logger.error(f"Error generating interview question: {e}")
         return None # Fallback to None, API route will handle 500 error
@@ -206,17 +238,82 @@ def evaluate_answer(question: str, transcript: str, conversation_state: dict) ->
         evaluation_str = response.choices[0].message.content
         logger.info(f"Received evaluation from LLM: {evaluation_str}")
         
+        # Check for common refusal phrases
+        refusal_phrases = [
+            "i cannot", "i'm unable to", "i am unable to", "i'm sorry, but i cannot", 
+            "as an ai assistant, i cannot", "policy violation", "controversial", 
+            "inappropriate", "i am not programmed to", "i'm not supposed to"
+        ]
+        # Check in lowercase to be case-insensitive
+        if any(phrase in evaluation_str.lower() for phrase in refusal_phrases):
+            # Try to extract a more specific refusal message if possible, otherwise use a generic one
+            # This is a simple heuristic; more sophisticated extraction might be needed if LLM varies a lot
+            first_sentence_of_refusal = evaluation_str.split('.')[0]
+            user_friendly_refusal = f"Evaluation failed: {first_sentence_of_refusal}." \
+                if len(first_sentence_of_refusal) < 150 else "Evaluation failed: The AI declined to process this request due to content policies."
+
+            logger.warning(f"LLM refusal detected in evaluation: {evaluation_str}")
+            return {"score": 0, "feedback": user_friendly_refusal, "refusal": True, "raw_llm_response": evaluation_str}
+
+        # Attempt to extract the JSON part, discarding any preceding text
+        cleaned_evaluation_str = evaluation_str.strip()
+        
+        json_block_start_indices = [
+            cleaned_evaluation_str.find("```json"),
+            cleaned_evaluation_str.find("```"),
+            cleaned_evaluation_str.find("{") 
+        ]
+        
+        actual_start_index = -1
+        for index in json_block_start_indices:
+            if index != -1:
+                actual_start_index = index
+                break
+        
+        if actual_start_index != -1:
+            cleaned_evaluation_str = cleaned_evaluation_str[actual_start_index:]
+            logger.info(f"Extracted potential JSON block: {cleaned_evaluation_str[:200]}...") # Log first 200 chars
+        else:
+            logger.warning(f"Could not find a clear JSON block start in LLM response: {evaluation_str}")
+            # Fallback to old behavior if no clear start is found, though it might still fail
+            pass # cleaned_evaluation_str remains the initially stripped full string
+
+        # Strip markdown code fences if present (applied to the extracted block)
+        if cleaned_evaluation_str.startswith("```json"):
+            cleaned_evaluation_str = cleaned_evaluation_str[len("```json"):].strip()
+        if cleaned_evaluation_str.startswith("```"):
+            cleaned_evaluation_str = cleaned_evaluation_str[len("```"):].strip()
+        if cleaned_evaluation_str.endswith("```"):
+            cleaned_evaluation_str = cleaned_evaluation_str[:-len("```")].strip()
+
+        # Ensure the string is a valid JSON object (starts with { and ends with })
+        # Applied after potential Markdown stripping and extraction
+        if cleaned_evaluation_str.startswith("\"") and \
+           not cleaned_evaluation_str.startswith("{") and \
+           not cleaned_evaluation_str.endswith("}"):
+            logger.info("Attempting to wrap incomplete JSON (starts with quote) with curly braces.")
+            cleaned_evaluation_str = f"{{{cleaned_evaluation_str}}}"
+        elif not cleaned_evaluation_str.startswith("{") and cleaned_evaluation_str.strip(): # If not empty and no opening brace
+             logger.warning(f"Evaluation string does not start with '{{'. Original: {evaluation_str}, Cleaned Attempt: {cleaned_evaluation_str}")
+             # Consider if prepending '{' is safe or if it indicates a deeper issue
+        elif not cleaned_evaluation_str.endswith("}") and cleaned_evaluation_str.strip(): # If not empty and no closing brace
+             logger.warning(f"Evaluation string does not end with '}}'. Original: {evaluation_str}, Cleaned Attempt: {cleaned_evaluation_str}")
+             # Consider if appending '}' is safe
+
         import json
         try:
-            evaluation = json.loads(evaluation_str)
+            evaluation = json.loads(cleaned_evaluation_str)
             if not isinstance(evaluation.get('score'), (int, float)) or \
                not isinstance(evaluation.get('feedback'), str):
-                logger.error(f"LLM returned malformed JSON for evaluation. Data: {evaluation}")
-                return {"score": 1.0, "feedback": "Error: Malformed evaluation data from AI."}
+                logger.error(f"LLM returned malformed JSON for evaluation. Data: {evaluation}. Original: {evaluation_str}")
+                # Return the raw string if it's not structured as expected, so it can be seen by user if necessary
+                return {"score": 1.0, "feedback": f"Error: Malformed evaluation data from AI. Response: {cleaned_evaluation_str[:200]}", "refusal": False, "raw_llm_response": evaluation_str}
             
             score = float(evaluation.get('score', 1.0))
             evaluation['score'] = max(1.0, min(5.0, score)) 
-            
+            evaluation['refusal'] = False # Explicitly set refusal to false for successful parses
+            evaluation['raw_llm_response'] = evaluation_str # Include for debugging
+
             next_difficulty = question_difficulty
             if evaluation['score'] < 2.5 and question_difficulty != 'easy':
                 next_difficulty = 'easy'
@@ -230,15 +327,19 @@ def evaluate_answer(question: str, transcript: str, conversation_state: dict) ->
 
             return evaluation
         except json.JSONDecodeError as json_e:
-            logger.error(f"JSON decoding failed for LLM evaluation response: {json_e}. Raw response: {evaluation_str}")
-            return {"score": 1.0, "feedback": "Error: AI returned invalid JSON format for evaluation."}
+            logger.error(f"JSON decoding failed for LLM evaluation response: {json_e}. Raw response: {evaluation_str} (Cleaned: {cleaned_evaluation_str})")
+            # Return the raw string if it's not structured as expected
+            return {"score": 1.0, "feedback": f"Error: AI returned non-JSON format for evaluation. Response: {cleaned_evaluation_str[:200]}", "refusal": True, "raw_llm_response": evaluation_str} # Treat decode error as a type of refusal/failure
         except Exception as e_inner:
-            logger.error(f"Inner error processing evaluation response: {e_inner}. Raw: {evaluation_str}")
-            return {"score": 1.0, "feedback": "Error processing evaluation data."}
+            logger.error(f"Inner error processing evaluation response: {e_inner}. Raw: {evaluation_str} (Cleaned: {cleaned_evaluation_str})")
+            return {"score": 1.0, "feedback": f"Error processing evaluation data. Response: {cleaned_evaluation_str[:200]}", "refusal": True, "raw_llm_response": evaluation_str} # Treat other errors as refusal too
 
+    except openai.APIError as e:
+        logger.error(f"OpenAI APIError evaluating answer: {e.status_code=}, {e.response=}, {e.body=}, {e.request=}")
+        return {"score": 0, "feedback": f"Evaluation failed due to API error: {e.status_code}", "refusal": True, "raw_llm_response": str(e.body) if e.body else "API Error"}
     except Exception as e:
         logger.error(f"Error evaluating answer: {e}")
-        return None
+        return {"score": 0, "feedback": "Evaluation failed due to an unexpected error.", "refusal": True, "raw_llm_response": str(e)}
 
 # Example Usage (for testing purposes):
 # if __name__ == '__main__':

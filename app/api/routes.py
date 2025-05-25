@@ -26,6 +26,7 @@ def allowed_file(filename):
 
 @api_bp.route('/interview', methods=['POST'])
 def interview_endpoint():
+    logger.critical("--- /api/interview endpoint CALLED ---")
     logger.info(f"Received request for /api/interview. Method: {request.method}")
     
     # HACK: Using a global conversation ID for now
@@ -98,13 +99,25 @@ def interview_endpoint():
         logger.warning(f"CV file extension not allowed: {cv_file.filename}")
         # Optionally return an error, or just ignore the CV, or inform user
 
-    # Audio Processing (must be present for a typical interview turn after the first)
-    if not audio_base64 and not (cv_file and conversation_state["cv_skills"] is None):
-         # Audio is required if not an initial CV upload that hasn't been processed yet.
-         # If CV was just uploaded and processed, audio might not be present for the *first* question generation.
-        if not (cv_file and conversation_state["cv_skills"] is not None and not audio_base64):
-             logger.error("Missing 'audio' in request when it's not an initial CV upload without audio.")
-             return jsonify({"error": "Missing 'audio' in request payload when not an initial CV upload."}), 400
+    # --- MODIFIED AUDIO REQUIREMENT LOGIC START ---
+    if not audio_base64:
+        # Audio can be omitted if:
+        # 1. A CV file is part of the current request, and it's for the first question (implies skills might be processed now or were just processed).
+        # 2. No CV file is part of the current request, and it's the very first question (no prior questions asked).
+        
+        is_first_ever_question = not conversation_state["previous_questions"]
+
+        if cv_file and is_first_ever_question:
+            logger.info("CV is present in the request, and it's for the first question. Audio is optional here.")
+            # Proceed without audio, CV will be processed, then first question generated.
+        elif not cv_file and is_first_ever_question:
+            logger.info("No CV in the request, and it's the first question. Audio is optional here.")
+            # Proceed without audio, first question will be generated based on role.
+        else:
+            # Audio is missing, and we are past the point where it can be omitted (e.g., subsequent questions).
+            logger.error("Missing 'audio' in request. Audio is required for ongoing interview turns if not an initial CV submission for the first question.")
+            return jsonify({"error": "Missing 'audio' in request payload for an ongoing interview turn."}), 400
+    # --- MODIFIED AUDIO REQUIREMENT LOGIC END ---
     
     transcript = "" 
     if audio_base64 and isinstance(audio_base64, str):
@@ -145,12 +158,17 @@ def interview_endpoint():
             conversation_state=conversation_state # Pass full state
         ) 
         if evaluation is None:
-            logger.error("Failed to evaluate answer.")
-            evaluation = {"score": 0, "feedback": "Evaluation failed."}
+            logger.error("Failed to evaluate answer (agent_logic returned None unexpectedly).")
+            evaluation = {"score": 0, "feedback": "Evaluation failed unexpectedly.", "refusal": True, "raw_llm_response": "Agent logic returned None"}
         else:
-            logger.info(f"Evaluation successful: {evaluation}")
-            if "score" in evaluation:
+            logger.info(f"Evaluation result: {evaluation}")
+            # Only append score if it was a valid evaluation (not a refusal or a forced error score)
+            if not evaluation.get("refusal", False) and isinstance(evaluation.get("score"), (int, float)) and evaluation.get('score') > 0:
                 conversation_state["previous_scores"].append(evaluation["score"])
+            elif evaluation.get("refusal", False):
+                logger.info("Evaluation was a refusal. Score not recorded.")
+            else:
+                logger.info(f"Invalid or zero score not recorded: {evaluation.get('score')}")
     
     logger.info(f"Generating interview question for role: {role}, using conversation state.")
     generated_question = agent_logic.generate_interview_question(
